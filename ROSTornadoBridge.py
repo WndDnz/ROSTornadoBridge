@@ -43,7 +43,7 @@ class ROSTornadoBridge(object):
     def __init__(self, node_name="ROSTornadoBridge"):
         self.__class__.instance = self
         self._node = rospy.init_node(node_name)
-        self.port = rospy.get_param("~port", 8001)
+        self.port = rospy.get_param("~port", 8002)
 
         # desired subscriptions of all the websockets connecting to this instance.
         # these remote subs are updated directly by "friend" class ROSTornadoBridgeSocketHandler.
@@ -364,7 +364,7 @@ class ROSTornadoBridge(object):
         )
 
     def random_msg_callback(self):
-        msg = random.randint(-127, 128)
+        msg = random.randint(-128, 127)
         self.random_msg.publish(msg)
         rospy.loginfo(f"Published {msg}.")
     

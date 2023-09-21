@@ -8,6 +8,7 @@ import traceback
 import types
 import uuid
 
+__version__ = 1
 
 class NoCacheStaticFileHandler(tornado.web.StaticFileHandler):
     def set_extra_headers(self, path):
@@ -28,7 +29,7 @@ class ROSTornadoBridgeSocketHandler(tornado.websocket.WebSocketHandler):
         return {}
 
     def check_origin(self, origin):
-        allowed = ["http://localhost:8080", "http://localhost:8000"]
+        allowed = ["http://localhost:8080", "http://localhost:8000", "http://127.0.0.1:5502"]
         if origin in allowed:
             print("allowed", origin)
             return 1

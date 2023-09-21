@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ROSTornadoBridge Test</title>
+  </head>
+  <body>
+    <h1>Random number: <span id="msg">0</span></h1>
+    <script>
+      class WebSocketV1Transport {
+        constructor({ path, onOpen, onClose, onMsg, onTopics, onSystem }) {
+          this.path = path;
+          this.onOpen = onOpen ? onOpen.bind(this) : null;
+          this.onClose = onClose ? onClose.bind(this) : null;
+          this.onMsg = onMsg ? onMsg.bind(this) : null;
+          this.onTopics = onTopics ? onTopics.bind(this) : null;
+          this.onSystem = onSystem ? onSystem.bind(this) : null;
+          this.ws = null;
+        }
+
+        connect() {
+          var protocolPrefix =
+            window.location.protocol === "https:" ? "wss:" : "ws:";
+          let abspath =
+            protocolPrefix + "//" + location.hostname + ":8002" + this.path;
+
+          let that = this;
+
+          console.log("::: Opening WebSocket to: ", abspath);
+          this.ws = new WebSocket(abspath);
+
+          this.ws.onopen = function () {
+            console.log("connected");
+            if (that.onOpen) that.onOpen(that);
+          };
+
+          this.ws.onclose = function () {
+            console.log("disconnected");
+            if (that.onClose) that.onClose(that);
+          };
+
+          this.ws.onmessage = function (wsmsg) {
+            let data = [];
+            try {
+              // try fast native parser
+              data = JSON.parse(wsmsg.data);
+            } catch (e) {
+              // Python may have included Infinity, -Infinity, NaN
+              // fall back to a JSON5 parsers which will deal with these well but is almost 50X slower in Chrome
+              data = null; //JSON5 ? JSON5.parse(wsmsg.data) : null;
+            }
+
+            let wsMsgType = data[0];
+
+            if (wsMsgType === WebSocketV1Transport.MSG_PING) {
+              this.send(
+                JSON.stringify([
+                  WebSocketV1Transport.MSG_PONG,
+                  {
+                    [WebSocketV1Transport.PONG_SEQ]:
+                      data[1][WebSocketV1Transport.PING_SEQ],
+                    [WebSocketV1Transport.PONG_TIME]: Date.now(),
+                  },
+                ])
+              );
+            } else if (wsMsgType === WebSocketV1Transport.MSG_MSG && that.onMsg)
+              that.onMsg(data[1]);
+            else if (
+              wsMsgType === WebSocketV1Transport.MSG_TOPICS &&
+              that.onTopics
+            )
+              that.onTopics(data[1]);
+            else if (
+              wsMsgType === WebSocketV1Transport.MSG_SYSTEM &&
+              that.onSystem
+            )
+              that.onSystem(data[1]);
+            else console.log("received unknown message: " + wsmsg.data);
+          };
+        }
+
+        isConnected() {
+          return this.ws && this.ws.readyState === this.ws.OPEN;
+        }
+
+        subscribe({ topicName, maxUpdateRate = 24.0 }) {
+          this.ws.send(
+            JSON.stringify([
+              WebSocketV1Transport.MSG_SUB,
+              { topicName: topicName, maxUpdateRate: maxUpdateRate },
+            ])
+          );
+        }
+
+        unsubscribe({ topicName }) {
+          this.ws.send(
+            JSON.stringify([
+              WebSocketV1Transport.MSG_UNSUB,
+              { topicName: topicName },
+            ])
+          );
+        }
+      }
+
+      WebSocketV1Transport.MSG_PING = "p";
+      WebSocketV1Transport.MSG_PONG = "q";
+      WebSocketV1Transport.MSG_MSG = "m";
+      WebSocketV1Transport.MSG_TOPICS = "t";
+      WebSocketV1Transport.MSG_SUB = "s";
+      WebSocketV1Transport.MSG_SYSTEM = "y";
+      WebSocketV1Transport.MSG_UNSUB = "u";
+
+      WebSocketV1Transport.PING_SEQ = "s";
+      WebSocketV1Transport.PONG_SEQ = "s";
+      WebSocketV1Transport.PONG_TIME = "t";
+
+      let subscriptions = {};
+      let currentTransport = null;
+      let currentTopics = [];
+      let currentTopicsStr = "";
+      let requiredTopics = ["/random_msg"];
+
+      function initSubscribe({ topicName, topicType }) {
+        // creates a subscriber for topicName
+        // and also initializes a viewer (if it doesn't already exist)
+        // in advance of arrival of the first data
+        // this way the user gets a snappy UI response because the viewer appears immediately
+        if (!subscriptions[topicName]) {
+          subscriptions[topicName] = {
+            topicType: topicType,
+          };
+        }
+        currentTransport.subscribe({ topicName: topicName });
+      }
+
+      function unsubscribeFromAll() {
+        Object.keys(subscriptions).forEach((key) => {
+          console.log("::: Unsubscribing from ", key);
+          delete subscriptions[key];
+          currentTransport.unsubscribe({ topicName: key });
+        });
+      }
+
+      function initDefaultTransport() {
+        currentTransport = new WebSocketV1Transport({
+          path: "/ros_tornado_bridge/v1",
+          onOpen: () => {
+            for (let topic_name in subscriptions) {
+              console.log("::: Re-subscribing to ", topic_name, ":::");
+              initSubscribe({
+                topicName: topic_name,
+                topicType: subscriptions[topic_name].topicType,
+              });
+            }
+          },
+          onMsg: (msg) => {
+            if (!subscriptions[msg._topic_name]) {
+              console.log("::: Received unsolicited message: ", msg, ":::");
+              return;
+            }
+            if (msg._topic_name == "/random_msg") {
+              msgItem = document.querySelector("#msg");
+              msgItem.innerHTML = msg.data;
+            }
+          },
+          onTopics: (topics) => {
+            // check if topics has actually changed, if not, don't do anything
+            // lazy shortcut to deep compares, might possibly even be faster than
+            // implementing a deep compare due to
+            // native optimization of JSON.stringify
+            let newTopicsStr = JSON.stringify(topics);
+            if (newTopicsStr === currentTopicsStr) return;
+            currentTopics = topics;
+            currentTopicsStr = newTopicsStr;
+            for (let topic in currentTopics) {
+              if (requiredTopics.includes(topic)) {
+                console.log("::: Subscribing to ", topic, " :::");
+                initSubscribe({
+                  topicName: topic,
+                  topicType: currentTopics[topic],
+                });
+              }
+            }
+          },
+          onSystem: (system) => {
+            if (system.hostname) {
+              console.log("::: Hostname: " + system.hostname, " :::");
+            }
+          },
+          onClose: () => {
+            unsubscribeFromAll();
+          },
+        });
+        currentTransport.connect();
+      }
+
+      initDefaultTransport();
+      reconnectTimerId = setInterval(() => {
+        if (currentTransport && !currentTransport.isConnected()) {
+          console.log("::: Attempting to reconnect... :::");
+          currentTransport.connect();
+        }
+      }, 5000);
+    </script>
+  </body>
+</html>
